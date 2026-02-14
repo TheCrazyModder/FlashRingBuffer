@@ -1,4 +1,4 @@
-cmake -S . -B build
+cmake -S . -B build -DUSE_PC_SIM=ON
 cmake --build build
 
-./build/ring_buffer
+./build/out

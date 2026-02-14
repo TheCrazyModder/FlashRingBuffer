@@ -5,8 +5,17 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include "../hal/flash_hal.h"
 
 uint8_t *memory;
+
+flash_hal_t g_flash_hal = (flash_hal_t){
+    .init = &init,
+    .deinit = &deinit,
+    .write = &write,
+    .read = &read,
+    .erase = &erase
+};
 
 int init() {
     memory = (uint8_t *)calloc(PARTITION_SIZE, 1);

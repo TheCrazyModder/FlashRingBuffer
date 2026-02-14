@@ -12,4 +12,6 @@ typedef struct {
     flash_error (*erase)(uint32_t);
 } flash_hal_t;
 
+extern flash_hal_t g_flash_hal;
+
 #endif

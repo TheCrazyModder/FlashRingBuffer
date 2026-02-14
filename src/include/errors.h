@@ -5,6 +5,11 @@ typedef enum {
     ERR_SUCCESS,
     ERR_FAIL,
     ERR_INVALID_ARGUMENT,
+    ERR_INVALID_ALIGN,
+    ERR_OUT_OF_BOUNDS,
+    ERR_BIT_CLEAR,
+    ERR_UNINITIALIZED,
+    ERR_NULL_PTR
 } flash_error;
 
 #endif

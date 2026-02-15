@@ -1,12 +1,12 @@
 #include "../hal/flash_hal.h"
 #include "string.h"
 
-flash_error write(uint32_t addr, uint8_t *ptr, uint32_t len) {
+flash_error write(uint32_t addr, const void *ptr, uint32_t len) {
     // add code here later
     return ERR_UNINITIALIZED;
 }
 
-flash_error read(uint32_t addr, uint8_t *ptr, uint32_t len) {
+flash_error read(uint32_t addr, void *ptr, uint32_t len) {
     // add esp code here
     return ERR_UNINITIALIZED;
 }

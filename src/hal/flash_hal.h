@@ -7,8 +7,10 @@
 typedef struct {
     int (*init)();
     void (*deinit)();
-    flash_error (*write)(uint32_t, uint8_t * ptr, uint32_t len);
-    flash_error (*read) (uint32_t, uint8_t * ptr, uint32_t len);
+    
+    // Write function by default will zero pad to keep the writes to the FLASH_ALIGN
+    flash_error (*write)(uint32_t, const void * ptr, uint32_t len);
+    flash_error (*read) (uint32_t, void * ptr, uint32_t len);
     flash_error (*erase)(uint32_t);
 } flash_hal_t;
 

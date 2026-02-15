@@ -9,7 +9,8 @@ typedef enum {
     ERR_OUT_OF_BOUNDS,
     ERR_BIT_CLEAR,
     ERR_UNINITIALIZED,
-    ERR_NULL_PTR
+    ERR_NULL_PTR,
+    ERR_NO_RECORD
 } flash_error;
 
 #endif

@@ -1,5 +1,5 @@
 #include "stdio.h"
-#include "../flashlog/flashlog.h"
+#include "../core/flashlog.h"
 
 typedef struct {
     uint32_t number;
@@ -29,7 +29,7 @@ int main() {
     error = flashlog_init(&state);
     
     if (error != 0) {
-        printf("Error initializing: %i", error);
+        printf("Error initializing: %i\n", error);
     }
     
     TestStruct test = {0};
@@ -55,6 +55,8 @@ int main() {
     test.yet_another_number = 1;
     test.just_one_more = 6;
     
+    printf("State address and record_already: %u %i\n", state.last_record_addr, state.struct_already);
+    
     error = flashlog_write(&state, &test, sizeof(test));
     
     //printf("Write result: %i\n", error);
@@ -66,7 +68,7 @@ int main() {
     printf("Read Error: %i\n", error);
     printf("Read struct number argument: %i %i %i %i\n", read.number, test.another_number, test.yet_another_number, test.just_one_more);
     
-    
+    // test the sector skipping
     
     flashlog_deinit();
 }

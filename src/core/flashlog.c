@@ -38,10 +38,13 @@ uint32_t get_total_record_size(uint32_t content_length) {
 }
 
 int flashlog_init(FlashlogState *state) {
-    if (!g_flash_hal.init) {
+    if (!state) {return -1;}
+    if (!g_flash_hal.init || !g_flash_hal.read || !g_flash_hal.write || !g_flash_hal.erase) {
         return -1;
     }
-    g_flash_hal.init();
+    if (g_flash_hal.init() != 0) {
+        return -1;
+    }
     
     // with stuff like memory or flash set up, we will now do the memory scan to initialize the state
     record_header header = {0};
@@ -59,13 +62,16 @@ int flashlog_init(FlashlogState *state) {
     uint32_t last_address = 0;
     uint32_t last_seq = 0;
     
-    while (1) {
+    uint32_t commit_message = 0;
+    
+    while (address < PARTITION_SIZE - sizeof(uint32_t)) {
+        header = (record_header){0, 0, 0, 0};
         if (g_flash_hal.read(address, &header, header_size) != 0) { // if there is an error reading flash
             // for now just set the last record here
             state->last_record_addr = last_address;
             state->last_record_seq = last_seq;
             state->struct_already = 1;
-            return 0;
+            break;
         }
         
         if (!is_valid_header(&header)) {
@@ -77,9 +83,37 @@ int flashlog_init(FlashlogState *state) {
                 state->last_record_addr = last_address;
                 state->last_record_seq = last_seq;
                 state->struct_already = 1;
+                break;
             }
         }
         
+        commit_message = 0;
+        
+        if (g_flash_hal.read(address + header_size + header.content_length, &commit_message, sizeof(uint32_t)) != 0) {
+            // record is corrupt
+            state->last_record_addr = last_address;
+            state->last_record_seq = last_seq;
+            state->struct_already = 1;
+            break;
+        }
+        
+        if (commit_message != COMMIT_MAGIC) {
+            // record is also corrupt
+            state->last_record_addr = last_address;
+            state->last_record_seq = last_seq;
+            state->struct_already = 1;
+            break;
+        }
+        
+        if (!is_after(header.sequence, last_seq)) { // we have hit an older record
+            state->last_record_addr = last_address;
+            state->last_record_seq = last_seq;
+            state->struct_already = 1;
+            break;
+        }
+        
+        last_seq = header.sequence;
+        last_address = address;
         address += get_total_record_size(header.content_length);
     }
     

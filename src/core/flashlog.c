@@ -4,9 +4,11 @@
 #include "../include/crc/crc.h"
 #include "../include/debug/debug.h"
 
+#include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include "stdbool.h"
 
 typedef struct {
     uint32_t magic;
@@ -17,6 +19,7 @@ typedef struct {
 } record_header; // THIS HEADER HAS TO BE A MULTIPLE OF THE FLASH_ALIGN GLOBAL CONST
 
 const uint32_t header_size = sizeof(record_header);
+const uint32_t max_content_length = SECTOR_SIZE - header_size - sizeof(uint32_t);
 
 // Returns true if a is after b in the unsigned sequence, otherwise 0
 int is_after(uint32_t a, uint32_t b) {
@@ -24,6 +27,9 @@ int is_after(uint32_t a, uint32_t b) {
 }
 
 int is_valid_header(const record_header *header) {
+    // some quick checks
+    if (header->content_length > max_content_length) return 0;
+    if (header->content_length == 0) {return 0;}
     if (header->magic == HEADER_MAGIC) {
         if (header->header_crc == crc32_byte((uint8_t*)header, header_size)) {
             return 1;
@@ -37,6 +43,44 @@ uint32_t get_total_record_size(uint32_t content_length) {
     return content_length + header_size + sizeof(uint32_t); // content + header + commit message
 }
 
+
+bool is_valid_record(uint32_t address) {
+    if (address >= PARTITION_SIZE) {return false;}
+    
+    record_header header = {0};
+    if (g_flash_hal.read(address, &header, header_size) != ERR_SUCCESS) {return false;}
+    
+    if (!is_valid_header(&header)) {return false;}
+    
+    if (header.content_length > max_content_length) {return false;}
+    
+    // check content crc
+    size_t content_bytes_left = header.content_length;
+    uint32_t crc = start_crc;
+    uint32_t reading_address = address + header_size;
+    
+    uint8_t bytes[CRC_CHUNK];
+    
+    while (content_bytes_left > 0) {
+        size_t read_bytes = min(content_bytes_left, CRC_CHUNK);
+        
+        if (g_flash_hal.read(reading_address, bytes, read_bytes) != ERR_SUCCESS) {return false;}
+        
+        crc = crc32_byte_seq(crc, bytes, read_bytes);
+        content_bytes_left -= read_bytes;
+        reading_address += read_bytes;
+    }
+    
+    crc = crc32_finalize(crc);
+    if (crc != header.content_crc) {return false;}
+    
+    uint32_t commit = 0;
+    if (g_flash_hal.read(address + header_size + header.content_length, &commit, sizeof(uint32_t)) != 0) {return false;}
+    if (commit != COMMIT_MAGIC) {return false;}
+    
+    return true;
+}
+
 int flashlog_init(FlashlogState *state) {
     if (!state) {return -1;}
     if (!g_flash_hal.init || !g_flash_hal.read || !g_flash_hal.write || !g_flash_hal.erase) {
@@ -46,78 +90,32 @@ int flashlog_init(FlashlogState *state) {
         return -1;
     }
     
-    // with stuff like memory or flash set up, we will now do the memory scan to initialize the state
-    record_header header = {0};
+    // we will allocate an area of memory for now and free it at the end of the init
     
-    // if there isnt a header at address 0 the memory is uninitilized
-    g_flash_hal.read(0, &header, header_size);
-    if (!is_valid_header(&header)) {
-        state->struct_already = 0;
-        state->last_record_seq = 0;
-        state->last_record_addr = 0;
-        return 0;
+    
+    // we first do a quick elimination scan to determine which sectors have valid records
+    // this method will eliminate sectors that don't have valid records at the first address
+    // so could theoretically falsly eliminate sectors where only the first record is corrupt
+    // but the rest are fine. that is a tradeoff we accept for now
+    
+    uint16_t num_sectors = (int)(PARTITION_SIZE / SECTOR_SIZE);
+    
+    bool sector_map[num_sectors];
+    record_header header;
+    
+    for (uint32_t sector = 0; sector < num_sectors; sector++) {
+        memset(&header, 0, header_size); // reset the header to avoid any ghost values
+        sector_map[sector] = false;
+        uint32_t address = sector * SECTOR_SIZE;
+        
+        if (address >= PARTITION_SIZE - header_size - sizeof(uint32_t)) {break;}
+        
+        if (g_flash_hal.read(address, &header, header_size) != ERR_SUCCESS) {continue;}
+        
+        if (!is_valid_header(&header)) {continue;}
+        
+        
     }
-    
-    uint32_t address = get_total_record_size(header.content_length);
-    uint32_t last_address = 0;
-    uint32_t last_seq = 0;
-    
-    uint32_t commit_message = 0;
-    
-    while (address < PARTITION_SIZE - sizeof(uint32_t)) {
-        header = (record_header){0, 0, 0, 0};
-        if (g_flash_hal.read(address, &header, header_size) != 0) { // if there is an error reading flash
-            // for now just set the last record here
-            state->last_record_addr = last_address;
-            state->last_record_seq = last_seq;
-            state->struct_already = 1;
-            break;
-        }
-        
-        if (!is_valid_header(&header)) {
-            // try the next sector
-            if (!(address % SECTOR_SIZE == 0)) {
-                address = round_up(address, SECTOR_SIZE);
-                continue;
-            } else { // if the next sector doesn't have a header either we have reached the end
-                state->last_record_addr = last_address;
-                state->last_record_seq = last_seq;
-                state->struct_already = 1;
-                break;
-            }
-        }
-        
-        commit_message = 0;
-        
-        if (g_flash_hal.read(address + header_size + header.content_length, &commit_message, sizeof(uint32_t)) != 0) {
-            // record is corrupt
-            state->last_record_addr = last_address;
-            state->last_record_seq = last_seq;
-            state->struct_already = 1;
-            break;
-        }
-        
-        if (commit_message != COMMIT_MAGIC) {
-            // record is also corrupt
-            state->last_record_addr = last_address;
-            state->last_record_seq = last_seq;
-            state->struct_already = 1;
-            break;
-        }
-        
-        if (!is_after(header.sequence, last_seq)) { // we have hit an older record
-            state->last_record_addr = last_address;
-            state->last_record_seq = last_seq;
-            state->struct_already = 1;
-            break;
-        }
-        
-        last_seq = header.sequence;
-        last_address = address;
-        address += get_total_record_size(header.content_length);
-    }
-    
-    return 0;
 }
 
 int flashlog_deinit() {
@@ -157,7 +155,6 @@ flash_error flashlog_write(FlashlogState *state, const void *ptr, uint32_t size)
     } else {
         debug_print("state has no records: starting at %u\n", write_addr);
     }
-    
     
     
     record_header header = {0};

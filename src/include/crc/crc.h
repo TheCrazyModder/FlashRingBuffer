@@ -70,6 +70,12 @@ static const uint32_t poly8_lookup[256] = {
     0xB40BBE37, 0xC30C8EA1, 0x5A05DF1B, 0x2D02EF8D
 };
 
+extern const uint32_t start_crc;
+
+uint32_t crc32_byte_seq(uint32_t crc, const uint8_t *p, uint32_t len);
+
 uint32_t crc32_byte(const uint8_t *p, uint32_t bytelength);
+
+uint32_t crc32_finalize(uint32_t crc);
 
 #endif

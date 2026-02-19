@@ -26,6 +26,10 @@ int is_after(uint32_t a, uint32_t b) {
     return (uint32_t)(a - b) < 0x80000000u;
 }
 
+void reset_header(record_header *header) {
+    memset(header, 0, header_size);
+}
+
 int is_valid_header(const record_header *header) {
     // some quick checks
     if (header->content_length > max_content_length) return 0;
@@ -75,7 +79,7 @@ bool is_valid_record(uint32_t address) {
     if (crc != header.content_crc) {return false;}
     
     uint32_t commit = 0;
-    if (g_flash_hal.read(address + header_size + header.content_length, &commit, sizeof(uint32_t)) != 0) {return false;}
+    if (g_flash_hal.read(address + header_size + header.content_length, &commit, sizeof(uint32_t)) != ERR_SUCCESS) {return false;}
     if (commit != COMMIT_MAGIC) {return false;}
     
     return true;
@@ -90,32 +94,72 @@ int flashlog_init(FlashlogState *state) {
         return -1;
     }
     
-    // we will allocate an area of memory for now and free it at the end of the init
-    
-    
     // we first do a quick elimination scan to determine which sectors have valid records
-    // this method will eliminate sectors that don't have valid records at the first address
-    // so could theoretically falsly eliminate sectors where only the first record is corrupt
-    // but the rest are fine. that is a tradeoff we accept for now
+    // this method will eliminate sectors that don't have valid records at the first address.
+    // Theoretically this could falsly eliminate sectors where only the first record is corrupt
+    // but the rest are fine in the case of a corruption from something other than writing a record
     
     uint16_t num_sectors = (int)(PARTITION_SIZE / SECTOR_SIZE);
     
-    bool sector_map[num_sectors];
+    uint32_t highest_sequence_index = 0;
+    uint32_t highest_sequence = 0;
+    
+    bool found_records = false;
+    
     record_header header;
     
     for (uint32_t sector = 0; sector < num_sectors; sector++) {
-        memset(&header, 0, header_size); // reset the header to avoid any ghost values
-        sector_map[sector] = false;
+        
         uint32_t address = sector * SECTOR_SIZE;
         
         if (address >= PARTITION_SIZE - header_size - sizeof(uint32_t)) {break;}
         
+        if (!is_valid_record(address)) {continue;}
+        
+        reset_header(&header); // reset the header to avoid any ghost values
+        
         if (g_flash_hal.read(address, &header, header_size) != ERR_SUCCESS) {continue;}
         
-        if (!is_valid_header(&header)) {continue;}
+        found_records = true; 
         
-        
+        if (is_after(header.sequence, highest_sequence)) {
+            highest_sequence_index = sector;
+            highest_sequence = header.sequence;
+        }
     }
+    
+    // if we didn't find any records than set to the default blank state
+    
+    if (!found_records) {
+        state->last_record_addr = 0; 
+        state->last_record_seq = 0; 
+        state->struct_already = 0;
+        return 0;
+    }
+    
+    // if we have a sector to scan, scan for the address and sequence of the latest record
+    
+    uint32_t address = highest_sequence_index * SECTOR_SIZE;
+    
+    while (true) {
+        reset_header(&header);
+        if (!is_valid_record(address)) {break;}
+        if (g_flash_hal.read(address, &header, header_size) != ERR_SUCCESS) {break;}
+        
+        if (is_after(header.sequence, highest_sequence)) {
+            highest_sequence = header.sequence;
+        }
+        
+        address += get_total_record_size(header.content_length);
+        
+        if (address + header_size + sizeof(uint32_t) >= SECTOR_SIZE * highest_sequence_index) {break;}
+    }
+    
+    state->last_record_addr = address;
+    state->last_record_seq = highest_sequence;
+    state->struct_already = 1;
+    
+    return 0;
 }
 
 int flashlog_deinit() {

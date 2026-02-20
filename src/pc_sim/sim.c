@@ -6,10 +6,15 @@
 #include "../include/debug/debug.h"
 
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
+const char* file_path = "flash.bin";
+
 uint8_t *memory = NULL;
+
+FILE *file;
 
 flash_hal_t g_flash_hal = (flash_hal_t){
     .init = &init,
@@ -19,26 +24,55 @@ flash_hal_t g_flash_hal = (flash_hal_t){
     .erase = &erase
 };
 
+long get_file_size(FILE *file) {
+    if (file == NULL) {return 0;}
+    fseek(file, 0, SEEK_END);
+    long size = ftell(file);
+    rewind(file);
+    return size;
+}
+
 int init() {
     memory = (uint8_t *)malloc(PARTITION_SIZE);
-    if (memory == NULL) {
-        return -1;
-    }
+    if (!memory) {return -1;}
     
     memset(memory, 0xFF, PARTITION_SIZE);
     
-    //debug_print("Byte 0 after init: %u\n", memory[0]);
+    // load the simulated flash file
+    file = fopen(file_path, "rb");
+    if (!file) {  // either return or handle with a debug message
+        // return -1;
+        debug_print("Error opening file, creating file now\n");
+        file = fopen(file_path, "w+b");
+    } else {
+        long size = get_file_size(file);
+        size_t bytes = fread(memory, 1, min(size, PARTITION_SIZE), file); // read the file into our memory struct
+        if (bytes != size) {return -1;} // EOF or error
+    }
+    fclose(file);
+    file = NULL;
     
+
     return 0;
 }
 
 int initialized() {
-    return !(memory == NULL);
+    return (!(memory == NULL) && !(file == NULL));
 }
 
 void deinit() {
-    if (memory != NULL) {
+    if (memory) {
+        file = fopen(file_path, "wb");
+        if (file) {
+            size_t written = fwrite(memory, 1, PARTITION_SIZE, file);
+            if (written != PARTITION_SIZE) {debug_print("Error writing memory to file\n");}
+            fclose(file);
+            file = NULL;
+        } else {
+            debug_print("Error saving file\n");
+        }
         free(memory);
+        memory = NULL;
     }
 }
 
@@ -101,7 +135,7 @@ flash_error read(uint32_t addr, void *ptr, uint32_t len) {
     
     // VERY TEMP
     for (int i = addr; i < addr + len; i++) {
-        debug_print("%i: %u\n", i, memory[i]);
+        //debug_print("%i: %u\n", i, memory[i]);
     }
     
     return ERR_SUCCESS;

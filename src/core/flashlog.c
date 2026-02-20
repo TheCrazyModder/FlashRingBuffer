@@ -114,13 +114,19 @@ int flashlog_init(FlashlogState *state) {
         
         if (address >= PARTITION_SIZE - header_size - sizeof(uint32_t)) {break;}
         
-        if (!is_valid_record(address)) {continue;}
+        if (!is_valid_record(address)) {
+            debug_print("Scanning sector %u at address %u found no record\n", sector, address);
+            uint8_t first_byte = 0;
+            g_flash_hal.read(address, &first_byte, sizeof(uint8_t));
+            debug_print("First debug byte: %hd\n", first_byte);
+            continue;
+        }
+        
+        found_records = true; 
         
         reset_header(&header); // reset the header to avoid any ghost values
         
         if (g_flash_hal.read(address, &header, header_size) != ERR_SUCCESS) {continue;}
-        
-        found_records = true; 
         
         if (is_after(header.sequence, highest_sequence)) {
             highest_sequence_index = sector;

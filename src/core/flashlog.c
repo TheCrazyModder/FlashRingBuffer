@@ -1,5 +1,4 @@
 #include "flashlog.h"
-#include "../include/globals.h"
 #include "../include/utils/utils.h"
 #include "../include/crc/crc.h"
 #include "../include/debug/debug.h"
@@ -9,17 +8,6 @@
 #include <stdio.h>
 #include <string.h>
 #include "stdbool.h"
-
-typedef struct {
-    uint32_t magic;
-    uint32_t sequence;
-    uint32_t content_length;
-    uint32_t content_crc;
-    uint32_t header_crc;
-} record_header; // THIS HEADER HAS TO BE A MULTIPLE OF THE FLASH_ALIGN GLOBAL CONST
-
-const uint32_t header_size = sizeof(record_header);
-const uint32_t max_content_length = SECTOR_SIZE - header_size - sizeof(uint32_t);
 
 // Returns true if a is after b in the unsigned sequence, otherwise 0
 int is_after(uint32_t a, uint32_t b) {
@@ -35,9 +23,9 @@ int is_valid_header(const record_header *header) {
     if (header->content_length > max_content_length) return 0;
     if (header->content_length == 0) {return 0;}
     if (header->magic == HEADER_MAGIC) {
-        if (header->header_crc == crc32_byte((uint8_t*)header, header_size)) {
+        //if (header->header_crc == crc32_byte((uint8_t*)header, header_size)) {
             return 1;
-        }
+        //}
     }
     return 0;
 }
@@ -114,11 +102,37 @@ int flashlog_init(FlashlogState *state) {
         
         if (address >= PARTITION_SIZE - header_size - sizeof(uint32_t)) {break;}
         
+        debug_print("Scanning sector %u at address %u\n", sector, address);
+        
         if (!is_valid_record(address)) {
-            debug_print("Scanning sector %u at address %u found no record\n", sector, address);
+            debug_print("found no record\n");
+            
+            // this is all just temporary code to try and iron out some bugs
+            // TODO remove
+            record_header header = {0};
             uint8_t first_byte = 0;
-            g_flash_hal.read(address, &first_byte, sizeof(uint8_t));
+            uint32_t error = g_flash_hal.read(address, &first_byte, sizeof(uint8_t));
+            if (error != ERR_SUCCESS) {
+                debug_print("Error reading first byte of sector. Error %u\n", error); // continue for now
+            };
             debug_print("First debug byte: %hd\n", first_byte);
+            
+            error = g_flash_hal.read(address, &header, header_size);
+            if (error != ERR_SUCCESS) {
+                debug_print("Error reading header from start of sector. Error %u\n", error); // continue for now
+            };
+            
+            bool header_valid = is_valid_record(address);
+            
+            if (header_valid) {
+                debug_print("Raw header from sector start. Valid: %d\n", header_valid);
+                debug_print("Magic %u\n", header.magic);
+                debug_print("Sequence %u\n", header.sequence);
+                debug_print("Content length %u\n", header.content_length);
+                debug_print("Content crc %u\n", header.content_crc);
+                debug_print("Header crc %u\n", header.header_crc);
+            }
+            
             continue;
         }
         
@@ -212,6 +226,7 @@ flash_error flashlog_write(FlashlogState *state, const void *ptr, uint32_t size)
     header.sequence = state->last_record_seq + 1;
     header.content_crc = crc32_byte((uint8_t*)ptr, size);
     header.content_length = size;
+    header.header_crc = 0xFF; // temp for now. TODO add calculation for other fields later
     
     uint8_t error = 0;
     

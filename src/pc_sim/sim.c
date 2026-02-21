@@ -44,10 +44,18 @@ int init() {
         // return -1;
         debug_print("Error opening file, creating file now\n");
         file = fopen(file_path, "w+b");
+        size_t written = fwrite(memory, 1, PARTITION_SIZE, file);
+        if (written != PARTITION_SIZE) {debug_print("Error initializing new file\n");}
     } else {
+        debug_print("Opening existing flash file\n");
         long size = get_file_size(file);
         size_t bytes = fread(memory, 1, min(size, PARTITION_SIZE), file); // read the file into our memory struct
         if (bytes != size) {return -1;} // EOF or error
+        if (bytes != PARTITION_SIZE) {debug_print("Flash file smaller than memory, results may differ\n");}
+        // bug with file loading so this is temp debug
+        // TEMP
+        debug_print("First 4 file bytes: %x %x %x %x\n", memory[0], memory[1], memory[2], memory[3]);
+        
     }
     fclose(file);
     file = NULL;
@@ -57,7 +65,7 @@ int init() {
 }
 
 int initialized() {
-    return (!(memory == NULL) && !(file == NULL));
+    return (memory != NULL);
 }
 
 void deinit() {

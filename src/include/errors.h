@@ -13,4 +13,16 @@ typedef enum {
     ERR_NO_RECORD
 } flash_error;
 
+typedef enum {
+    RECORD_VALID,
+    RECORD_CORRUPT,
+    RECORD_INVALID_HEADER,
+    RECORD_HEADER_BOUNDS,
+    RECORD_CRC_INVALID,
+    RECORD_INVALID_COMMIT,
+    RECORD_INVALID,
+    RECORD_NO_EXIST,
+    RECORD_READ_ERROR
+} record_state;
+
 #endif

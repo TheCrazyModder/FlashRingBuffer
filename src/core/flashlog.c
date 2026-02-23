@@ -35,16 +35,15 @@ uint32_t get_total_record_size(uint32_t content_length) {
     return content_length + header_size + sizeof(uint32_t); // content + header + commit message
 }
 
-
-bool is_valid_record(uint32_t address) {
-    if (address >= PARTITION_SIZE) {return false;}
+record_state is_valid_record(uint32_t address) {
+    if (address >= PARTITION_SIZE) {return RECORD_NO_EXIST;}
     
     record_header header = {0};
-    if (g_flash_hal.read(address, &header, header_size) != ERR_SUCCESS) {return false;}
+    if (g_flash_hal.read(address, &header, header_size) != ERR_SUCCESS) {return RECORD_READ_ERROR;}
     
-    if (!is_valid_header(&header)) {return false;}
+    if (!is_valid_header(&header)) {return RECORD_INVALID_HEADER;}
     
-    if (header.content_length > max_content_length) {return false;}
+    if (header.content_length > max_content_length) {return RECORD_HEADER_BOUNDS;}
     
     // check content crc
     size_t content_bytes_left = header.content_length;
@@ -56,7 +55,7 @@ bool is_valid_record(uint32_t address) {
     while (content_bytes_left > 0) {
         size_t read_bytes = min(content_bytes_left, CRC_CHUNK);
         
-        if (g_flash_hal.read(reading_address, bytes, read_bytes) != ERR_SUCCESS) {return false;}
+        if (g_flash_hal.read(reading_address, bytes, read_bytes) != ERR_SUCCESS) {return RECORD_READ_ERROR;}
         
         crc = crc32_byte_seq(crc, bytes, read_bytes);
         content_bytes_left -= read_bytes;
@@ -64,13 +63,13 @@ bool is_valid_record(uint32_t address) {
     }
     
     crc = crc32_finalize(crc);
-    if (crc != header.content_crc) {return false;}
+    if (crc != header.content_crc) {return RECORD_CRC_INVALID;}
     
     uint32_t commit = 0;
-    if (g_flash_hal.read(address + header_size + header.content_length, &commit, sizeof(uint32_t)) != ERR_SUCCESS) {return false;}
-    if (commit != COMMIT_MAGIC) {return false;}
+    if (g_flash_hal.read(address + header_size + header.content_length, &commit, sizeof(uint32_t)) != ERR_SUCCESS) {return RECORD_READ_ERROR;}
+    if (commit != COMMIT_MAGIC) {return RECORD_INVALID_COMMIT;}
     
-    return true;
+    return RECORD_VALID;
 }
 
 int flashlog_init(FlashlogState *state) {
@@ -104,8 +103,10 @@ int flashlog_init(FlashlogState *state) {
         
         debug_print("Scanning sector %u at address %u\n", sector, address);
         
-        if (!is_valid_record(address)) {
-            debug_print("found no record\n");
+        record_state error = is_valid_record(address);
+        
+        if (error != RECORD_VALID) {
+            debug_print("found no record, error %u\n", error);
             
             // this is all just temporary code to try and iron out some bugs
             // TODO remove
@@ -122,15 +123,15 @@ int flashlog_init(FlashlogState *state) {
                 debug_print("Error reading header from start of sector. Error %u\n", error); // continue for now
             };
             
-            bool header_valid = is_valid_record(address);
+            record_state record_valid = is_valid_record(address);
             
-            if (header_valid) {
-                debug_print("Raw header from sector start. Valid: %d\n", header_valid);
+            if (record_valid == RECORD_VALID) {
+                debug_print("\nRaw header from sector start\n");
                 debug_print("Magic %u\n", header.magic);
                 debug_print("Sequence %u\n", header.sequence);
                 debug_print("Content length %u\n", header.content_length);
                 debug_print("Content crc %u\n", header.content_crc);
-                debug_print("Header crc %u\n", header.header_crc);
+                debug_print("Header crc %u\n\n", header.header_crc);
             }
             
             continue;
@@ -143,6 +144,7 @@ int flashlog_init(FlashlogState *state) {
         if (g_flash_hal.read(address, &header, header_size) != ERR_SUCCESS) {continue;}
         
         if (is_after(header.sequence, highest_sequence)) {
+            debug_print("Found header with seq %u, last one %u\n", header.sequence, highest_sequence);
             highest_sequence_index = sector;
             highest_sequence = header.sequence;
         }
@@ -151,6 +153,7 @@ int flashlog_init(FlashlogState *state) {
     // if we didn't find any records than set to the default blank state
     
     if (!found_records) {
+        debug_print("Didn't find any records, setting to default\n");
         state->last_record_addr = 0; 
         state->last_record_seq = 0; 
         state->struct_already = 0;
@@ -161,10 +164,25 @@ int flashlog_init(FlashlogState *state) {
     
     uint32_t address = highest_sequence_index * SECTOR_SIZE;
     
+    debug_print("Starting narrow scan at %u\n", address);
     while (true) {
         reset_header(&header);
-        if (!is_valid_record(address)) {break;}
-        if (g_flash_hal.read(address, &header, header_size) != ERR_SUCCESS) {break;}
+        
+        debug_print("Narrow scanning address: %u\n", address);
+        
+        record_state record = is_valid_record(address);
+        
+        if (record != RECORD_VALID) {
+            debug_print("Error %u reading record from address: %u, stopping scan\n", record, address);
+            break;
+        }
+        
+        if (g_flash_hal.read(address, &header, header_size) != ERR_SUCCESS) {
+            debug_print("Error reading header from address %u\n", address);
+            break;
+        }
+        
+        debug_print("Found header at addr: %u, next scan at %u\n", address, address + get_total_record_size(header.content_length));
         
         if (is_after(header.sequence, highest_sequence)) {
             highest_sequence = header.sequence;
@@ -172,12 +190,20 @@ int flashlog_init(FlashlogState *state) {
         
         address += get_total_record_size(header.content_length);
         
-        if (address + header_size + sizeof(uint32_t) >= SECTOR_SIZE * highest_sequence_index) {break;}
+        uint32_t min_next = address + header_size + sizeof(uint32_t);
+        uint32_t biggest_sector_address = SECTOR_SIZE * (highest_sequence_index + 1);
+        
+        if (min_next >= biggest_sector_address) {
+            debug_print("Address %u is outside of sector max %u, breaking\n", address, biggest_sector_address);
+            break;
+        }
     }
     
     state->last_record_addr = address;
     state->last_record_seq = highest_sequence;
     state->struct_already = 1;
+    
+    debug_print("Found records, setting to addr: %u, seq: %u\n", address, highest_sequence);
     
     return 0;
 }

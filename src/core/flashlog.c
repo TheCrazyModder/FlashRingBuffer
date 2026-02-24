@@ -41,7 +41,7 @@ record_state is_valid_record(uint32_t address) {
     record_header header = {0};
     if (g_flash_hal.read(address, &header, header_size) != ERR_SUCCESS) {return RECORD_READ_ERROR;}
     
-    if (!is_valid_header(&header)) {return RECORD_INVALID_HEADER;}
+    if (!is_valid_header(&header)) {return RECORD_NO_EXIST;}
     
     if (header.content_length > max_content_length) {return RECORD_HEADER_BOUNDS;}
     
@@ -66,7 +66,7 @@ record_state is_valid_record(uint32_t address) {
     if (crc != header.content_crc) {return RECORD_CRC_INVALID;}
     
     uint32_t commit = 0;
-    if (g_flash_hal.read(address + header_size + header.content_length, &commit, sizeof(uint32_t)) != ERR_SUCCESS) {return RECORD_READ_ERROR;}
+    if (g_flash_hal.read(round_up(address + header_size + header.content_length, FLASH_ALIGN), &commit, sizeof(uint32_t)) != ERR_SUCCESS) {return RECORD_READ_ERROR;}
     if (commit != COMMIT_MAGIC) {return RECORD_INVALID_COMMIT;}
     
     return RECORD_VALID;
@@ -163,6 +163,7 @@ int flashlog_init(FlashlogState *state) {
     // if we have a sector to scan, scan for the address and sequence of the latest record
     
     uint32_t address = highest_sequence_index * SECTOR_SIZE;
+    uint32_t max_sector_address = address + SECTOR_SIZE;
     
     debug_print("Starting narrow scan at %u\n", address);
     while (true) {
@@ -191,15 +192,14 @@ int flashlog_init(FlashlogState *state) {
         address += get_total_record_size(header.content_length);
         
         uint32_t min_next = address + header_size + sizeof(uint32_t);
-        uint32_t biggest_sector_address = SECTOR_SIZE * (highest_sequence_index + 1);
         
-        if (min_next >= biggest_sector_address) {
-            debug_print("Address %u is outside of sector max %u, breaking\n", address, biggest_sector_address);
+        if (min_next >= max_sector_address) {
+            debug_print("Address %u is outside of sector max %u, breaking\n", address, max_sector_address);
             break;
         }
     }
     
-    state->last_record_addr = address;
+    state->last_record_addr = round_up(address, FLASH_ALIGN);
     state->last_record_seq = highest_sequence;
     state->struct_already = 1;
     
@@ -238,7 +238,7 @@ flash_error flashlog_write(FlashlogState *state, const void *ptr, uint32_t size)
         } else {
             record_header last_header = {0};
             g_flash_hal.read(state->last_record_addr, &last_header, header_size); // this header shouldn't be random data as the initial memory scan would catch it
-            write_addr = state->last_record_addr + get_total_record_size(last_header.content_length);
+            write_addr = round_up(state->last_record_addr + get_total_record_size(last_header.content_length), FLASH_ALIGN);
             
             debug_print("state has records, address: %u\n", write_addr);
         }
@@ -272,7 +272,7 @@ flash_error flashlog_write(FlashlogState *state, const void *ptr, uint32_t size)
         return error;
     }
     
-    error = g_flash_hal.write(write_addr + header_size + size, &COMMIT_MAGIC, sizeof(uint32_t));
+    error = g_flash_hal.write(round_up(write_addr + header_size + size, FLASH_ALIGN), &COMMIT_MAGIC, sizeof(uint32_t));
     if (error != 0) {
         debug_print("Error commit magic: %i\n", error);
         return error;
@@ -305,15 +305,20 @@ flash_error read_latest(FlashlogState *state, void *ptr, uint32_t max_size) {
     g_flash_hal.read(state->last_record_addr, &header, header_size);
     
     if (crc32_byte((uint8_t*)&header, header_size) != header.header_crc) {
-        return ERR_NO_RECORD; // temp for now
+        //return ERR_NO_RECORD; // temp for now
     }
     
-    uint32_t read_size = max_size;
+    uint32_t read_size = min(max_size, header.content_length);
     
-    if (header.content_length < max_size) {
-        read_size = header.content_length;
-    }
+    // check for commit signature
+    uint32_t commit_address = round_up(state->last_record_addr + header_size + header.content_length, FLASH_ALIGN);
+    uint32_t commit = 0;
+    
+    if (g_flash_hal.read(commit_address, &commit, sizeof(uint32_t)) != ERR_SUCCESS) {return ERR_CORRUPT;}
+    
+    if (commit != COMMIT_MAGIC) {return ERR_NO_COMMIT;}
     
     debug_print("Reading content from %u\n", state->last_record_addr + header_size);
+    
     return g_flash_hal.read(state->last_record_addr + header_size, ptr, read_size);
 }
